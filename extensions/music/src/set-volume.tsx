@@ -7,6 +7,7 @@ import {
   showHUD,
   showToast,
   Toast,
+  popToRoot,
   getPreferenceValues,
   useNavigation,
   ArgumentsLaunchProps,
@@ -30,37 +31,40 @@ export default function SetVolume(props: ArgumentsLaunchProps) {
 
   const [volume, setVolume] = useState<number | null>(null);
 
-  if (volumeArg) {
-    pipe(
-      music.player.volume.set(parseInt(volumeArg)),
-      TE.mapLeft((error) => {
-        console.error(error);
-        showToast(Toast.Style.Failure, "Could not update volume");
-      }),
-      TE.map(() => {
-        showHUD(`Volume set to ${volumeArg}`);
-        closeMainWindow();
-      })
-    )();
-  }
-
+  // on view load
+  // update local state with current volume
   useEffect(() => {
     pipe(
       music.player.volume.get,
-      handleTaskEitherError((error) => error, setVolume)
+      handleTaskEitherError((error) => error, setVolume),
     )();
   }, []);
 
+  // if volume arg is passed we can close the view
+  useEffect(() => {
+    if (!volumeArg || isNaN(parseInt(volumeArg))) return;
+
+    pipe(
+      music.player.volume.set(parseInt(volumeArg)),
+      handleTaskEitherError("Could not update volume", () => {
+        showHUD(`Volume set to ${volumeArg}`);
+        popToRoot();
+        closeMainWindow();
+      }),
+    )();
+  }, [volumeArg]);
+
   return (
-    <List isLoading={!volume}>
-      {volumeLevels.map((level) => (
-        <List.Item
-          key={level}
-          title={level.toString()}
-          icon={volume === level ? Icon.CheckCircle : Icon.SpeakerOn}
-          actions={<Actions value={level} />}
-        />
-      ))}
+    <List isLoading={!volume || (volumeArg && !isNaN(parseInt(volumeArg)))}>
+      {!volumeArg &&
+        volumeLevels.map((level) => (
+          <List.Item
+            key={level}
+            title={level.toString()}
+            icon={volume === level ? Icon.CheckCircle : Icon.SpeakerOn}
+            actions={<Actions value={level} />}
+          />
+        ))}
     </List>
   );
 }
@@ -79,7 +83,7 @@ function Actions({ value }: { value: number }) {
       TE.map(() => {
         showHUD(`Volume set to ${value}`);
         closeMainWindow();
-      })
+      }),
     )();
 
     pop();

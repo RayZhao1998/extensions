@@ -1,4 +1,4 @@
-import { List, Grid } from "@raycast/api";
+import { Grid, List } from "@raycast/api";
 import { layout } from "./preferences";
 
 export type ListType = "list";
@@ -12,6 +12,13 @@ export function ListOrGrid<T>(props: ListOrGridProps, context?: T) {
 type ListOrGridSectionProps = List.Section.Props | Grid.Section.Props;
 export function ListOrGridSection<T>(props: ListOrGridSectionProps, context?: T) {
   return layout === "list" ? List.Section(props, context) : Grid.Section(props, context);
+}
+
+type ListOrGridItemProps = List.Item.Props | Grid.Item.Props;
+export function ListOrGridItem<T>(props: ListOrGridItemProps, context?: T) {
+  return layout === "list"
+    ? List.Item(props as List.Item.Props, context)
+    : Grid.Item(props as Grid.Item.Props, context);
 }
 
 type ListOrGridEmptyViewProps = List.EmptyView.Props | Grid.EmptyView.Props;

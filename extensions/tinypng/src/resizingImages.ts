@@ -3,11 +3,9 @@ import { mkdirSync } from "fs";
 import { showToast, Toast, getSelectedFinderItems, getPreferenceValues, showHUD } from "@raycast/api";
 import { statSync, createReadStream, createWriteStream } from "fs";
 import fetch from "node-fetch";
-import { dirname, basename, join } from "path";
-
-type Preferences = {
-  apiKey: string;
-};
+import { dirname, basename, join, extname } from "path";
+import { compressImageResponseScheme } from "./lib/zodSchema";
+import { resolveOutputPath } from "./lib/utils";
 
 const preferences = getPreferenceValues<Preferences>();
 
@@ -75,8 +73,13 @@ const _validateArguments = (args: Props["arguments"]) => {
   if (args.method === "fit" && !(args.width && args.height)) {
     throw new Error("Width and height are required for fit method");
   }
-  if (args.method === "scale" && !(args.width || args.height)) {
-    throw new Error("Width or height are required for scale method");
+  if (args.method === "scale") {
+    if (!(args.width || args.height)) {
+      throw new Error("Width or height are required for scale method");
+    }
+    if (args.width && args.height) {
+      throw new Error("You cannot specify both width and height for scale method. Only specify one of them");
+    }
   }
   if (args.method === "cover" && !(args.width && args.height)) {
     throw new Error("Width and height are required for cover method");
@@ -88,13 +91,13 @@ const _validateArguments = (args: Props["arguments"]) => {
 
 const _compressAndResizeImage = async (
   filePath: string,
-  props: Props
+  props: Props,
 ): Promise<
   [
     {
       originalSize: number;
       compressedSize: number;
-    }
+    },
   ]
 > => {
   const { size } = statSync(filePath);
@@ -111,11 +114,7 @@ const _compressAndResizeImage = async (
     body: readStream,
   });
 
-  const resJson = (await resPost.json()) as {
-    output: { size: number; url: string };
-    error: string;
-    message: string;
-  };
+  const resJson = compressImageResponseScheme.parse(await resPost.json());
 
   // Validate
   if ("error" in resJson) {
@@ -125,6 +124,17 @@ const _compressAndResizeImage = async (
   // Download compressed image
   const downloadUrl = resJson.output.url;
 
+  // Resize object that is sent to the API. The width and height are optional in case of the scale method, otherwise they will both be filled.
+  const resize: { method: string; width?: number; height?: number } = {
+    method: props.arguments.method,
+  };
+  if (props.arguments.width) {
+    resize.width = Number(props.arguments.width);
+  }
+  if (props.arguments.height) {
+    resize.height = Number(props.arguments.height);
+  }
+
   const resResized = await fetch(downloadUrl, {
     method: "POST",
     headers: {
@@ -132,19 +142,24 @@ const _compressAndResizeImage = async (
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      resize: {
-        method: props.arguments.method,
-        width: Number(props.arguments.width),
-        height: Number(props.arguments.height),
-      },
+      resize,
     }),
   });
 
-  const outputDir = join(dirname(filePath), "resized-images");
-  if (!existsSync(outputDir)) {
-    mkdirSync(outputDir);
+  let outputDir = dirname(filePath);
+  if (!preferences.overwrite) {
+    outputDir = resolveOutputPath(filePath, preferences.destinationFolderPath);
+    if (!existsSync(outputDir)) {
+      mkdirSync(outputDir);
+    }
   }
-  const outputPath = join(outputDir, basename(filePath));
+
+  let outputPath = join(outputDir, basename(filePath));
+  if (outputPath === filePath && !preferences.overwrite) {
+    const ext = extname(filePath);
+    outputPath = join(outputDir, `${basename(filePath, ext)}.resized${ext}`);
+  }
+
   const outputFileStream = createWriteStream(outputPath);
 
   await new Promise((resolve, reject) => {

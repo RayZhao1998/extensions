@@ -1,191 +1,432 @@
-import { ActionPanel, List, Action, Grid } from "@raycast/api";
-import { useState, useEffect } from "react";
+import { Action, ActionPanel, Color, Grid, Icon, open, openExtensionPreferences, showToast, Toast } from "@raycast/api";
+import { usePromise } from "@raycast/utils";
 import { basename, dirname } from "path";
+import { useEffect, useState } from "react";
+import { runAppleScriptSync } from "run-applescript";
 import tildify from "tildify";
 import { fileURLToPath } from "url";
-import { useRecentEntries } from "./db";
-import { isDeepStrictEqual } from "util";
-import { preferences, layout, getBundleIdentifier } from "./preferences";
-import {
-  Filters,
-  EntryLike,
-  EntryType,
-  isFileEntry,
-  isFolderEntry,
-  isRemoteEntry,
-  isWorkspaceEntry,
-  RemoteEntry,
-} from "./types";
+import { RemoveMethods, useRecentEntries } from "./db";
 import {
   ListOrGrid,
   ListOrGridDropdown,
-  ListOrGridDropdownSection,
   ListOrGridDropdownItem,
+  ListOrGridDropdownSection,
+  ListOrGridEmptyView,
+  ListOrGridItem,
   ListOrGridSection,
 } from "./grid-or-list";
-import { getPinnedEntries, getPinnedMovement, PinnedActions, removePinnedEntry } from "./pinned";
+import { getBuildScheme } from "./lib/vscode";
+import { usePinnedEntries } from "./pinned";
+import {
+  build,
+  bundleIdentifier,
+  closeOtherWindows,
+  gitBranchColor,
+  keepSectionOrder,
+  layout,
+  showGitBranch,
+  terminalApp,
+} from "./preferences";
+import { EntryLike, EntryType, PinMethods } from "./types";
+import {
+  filterEntriesByType,
+  filterUnpinnedEntries,
+  isFileEntry,
+  isFolderEntry,
+  isRemoteEntry,
+  isRemoteWorkspaceEntry,
+  isValidHexColor,
+  isWorkspaceEntry,
+} from "./utils";
+import { getEditorApplication } from "./utils/editor";
+import { getGitBranch } from "./utils/git";
 
 export default function Command() {
-  const { data, isLoading } = useRecentEntries();
-  const [type, setType] = useState<EntryType>("All Types");
+  const { data, isLoading, error, ...removeMethods } = useRecentEntries();
+  const [type, setType] = useState<EntryType | null>(null);
+  const { pinnedEntries, ...pinnedMethods } = usePinnedEntries();
 
-  const [refresh, setRefresh] = useState<boolean>(false);
-  const [pinnedEntries, setPinnedEntries] = useState<EntryLike[]>([]);
-  useEffect(() => {
-    setPinnedEntries(getPinnedEntries());
-  }, [refresh]);
-  const refreshPinned = () => setRefresh(!refresh);
-
-  function RemoteItem(props: { entry: RemoteEntry; pinned?: boolean }) {
-    const remotePath = decodeURI(basename(props.entry.folderUri));
-    const uri = props.entry.folderUri.replace("vscode-remote://", "vscode://vscode-remote/");
-
-    const Actions = (): JSX.Element => (
-      <ActionPanel>
-        <ActionPanel.Section>
-          <Action.OpenInBrowser title={`Open in ${preferences.build}`} icon="action-icon.png" url={uri} />
-        </ActionPanel.Section>
-        <PinnedActions
-          {...props}
-          refresh={refreshPinned}
-          movement={getPinnedMovement(pinnedEntries, props.entry)}
-          type={Filters[type]}
-        />
-      </ActionPanel>
-    );
-
-    return layout === "list" ? (
-      <List.Item
-        id={props.pinned ? remotePath : undefined}
-        title={remotePath}
-        subtitle={props.entry.label || "/"}
-        icon={"../assets/remote.svg"}
-        actions={<Actions></Actions>}
-      />
-    ) : (
-      <Grid.Item
-        id={props.pinned ? remotePath : undefined}
-        title={remotePath}
-        subtitle={props.entry.label || "/"}
-        content={"../assets/remote.svg"}
-        actions={<Actions></Actions>}
-      />
+  if (error) {
+    showToast(Toast.Style.Failure, "Failed to load recent projects");
+    return (
+      <ListOrGrid
+        actions={
+          <ActionPanel>
+            <Action title="Change Build" onAction={openExtensionPreferences} />
+          </ActionPanel>
+        }
+      >
+        <ListOrGridEmptyView
+          title="Failed to load recent projects"
+          description="Press enter to change build"
+        ></ListOrGridEmptyView>
+      </ListOrGrid>
     );
   }
-
-  function LocalItem(props: { entry: EntryLike; uri: string; pinned?: boolean }) {
-    const name = decodeURIComponent(basename(props.uri));
-    const path = fileURLToPath(props.uri);
-    const prettyPath = tildify(path);
-    const subtitle = dirname(prettyPath);
-    const keywords = path.split("/");
-    const appKey = getBundleIdentifier();
-
-    const Actions = (): JSX.Element => (
-      <ActionPanel>
-        <ActionPanel.Section>
-          <Action.Open
-            title={`Open in ${preferences.build}`}
-            icon="action-icon.png"
-            target={props.uri}
-            application={appKey}
-          />
-          <Action.ShowInFinder path={path} />
-          <Action.OpenWith path={path} shortcut={{ modifiers: ["cmd"], key: "o" }} />
-        </ActionPanel.Section>
-        <ActionPanel.Section>
-          <Action.CopyToClipboard title="Copy Name" content={name} shortcut={{ modifiers: ["cmd"], key: "." }} />
-          <Action.CopyToClipboard
-            title="Copy Path"
-            content={prettyPath}
-            shortcut={{ modifiers: ["cmd", "shift"], key: "." }}
-          />
-        </ActionPanel.Section>
-        <ActionPanel.Section>
-          <Action.Trash
-            paths={[path]}
-            shortcut={{ modifiers: ["ctrl"], key: "x" }}
-            onTrash={() => {
-              removePinnedEntry(props.entry);
-              refreshPinned();
-            }}
-          />
-        </ActionPanel.Section>
-        <PinnedActions
-          {...props}
-          refresh={refreshPinned}
-          movement={getPinnedMovement(pinnedEntries, props.entry)}
-          type={Filters[type]}
-        />
-      </ActionPanel>
-    );
-
-    return layout === "list" ? (
-      <List.Item
-        id={props.pinned ? path : undefined}
-        title={name}
-        subtitle={subtitle}
-        icon={{ fileIcon: path }}
-        keywords={keywords}
-        actions={<Actions></Actions>}
-      />
-    ) : (
-      <Grid.Item
-        id={props.pinned ? path : undefined}
-        title={name}
-        subtitle={subtitle}
-        content={{ fileIcon: path }}
-        keywords={keywords}
-        actions={<Actions></Actions>}
-      />
-    );
-  }
-
-  const Entry = (props: { entry: EntryLike; pinned?: boolean }): JSX.Element => {
-    if (isWorkspaceEntry(props.entry)) {
-      return <LocalItem {...props} uri={props.entry.workspace.configPath} />;
-    } else if (isFolderEntry(props.entry)) {
-      return <LocalItem {...props} uri={props.entry.folderUri} />;
-    } else if (isRemoteEntry(props.entry)) {
-      return <RemoteItem entry={props.entry} pinned={props.pinned} />;
-    } else if (isFileEntry(props.entry)) {
-      return <LocalItem {...props} uri={props.entry.fileUri} />;
-    }
-    return <></>;
-  };
 
   return (
     <ListOrGrid
-      itemSize={Grid.ItemSize.Small}
+      columns={6}
       inset={Grid.Inset.Medium}
       searchBarPlaceholder="Search recent projects..."
       isLoading={isLoading}
-      filtering={{ keepSectionOrder: preferences.keepSectionOrder }}
-      searchBarAccessory={
-        <ListOrGridDropdown tooltip="Type of Project" onChange={(value: string) => setType(value as EntryType)}>
-          <ListOrGridDropdownItem title={"All Types"} value={"All Types"} />
-          <ListOrGridDropdownSection>
-            {Object.keys(Filters)
-              .filter((key) => key !== "All Types")
-              .map((key) => (
-                <ListOrGridDropdownItem key={key} title={key} value={key} />
-              ))}
-          </ListOrGridDropdownSection>
-        </ListOrGridDropdown>
-      }
+      filtering={{ keepSectionOrder }}
+      searchBarAccessory={<EntryTypeDropdown onChange={setType} />}
     >
       <ListOrGridSection title="Pinned Projects">
-        {pinnedEntries.filter(Filters[type]).map((entry: EntryLike, index: number) => (
-          <Entry key={`pinned-${index}`} entry={entry} pinned={true} />
+        {pinnedEntries.filter(filterEntriesByType(type)).map((entry: EntryLike, index: number) => (
+          <EntryItem key={`pinned-${index}`} entry={entry} pinned={true} {...pinnedMethods} {...removeMethods} />
         ))}
       </ListOrGridSection>
       <ListOrGridSection title="Recent Projects">
         {data
-          ?.filter((a) => Filters[type](a) && pinnedEntries.find((b) => isDeepStrictEqual(a, b)) === undefined)
+          ?.filter(filterUnpinnedEntries(pinnedEntries))
+          ?.filter(filterEntriesByType(type))
           .map((entry: EntryLike, index: number) => (
-            <Entry key={index} entry={entry} />
+            <EntryItem key={index} entry={entry} {...pinnedMethods} {...removeMethods} />
           ))}
       </ListOrGridSection>
     </ListOrGrid>
+  );
+}
+
+function EntryTypeDropdown(props: { onChange: (type: EntryType) => void }) {
+  return (
+    <ListOrGridDropdown
+      tooltip="Filter project types"
+      defaultValue={EntryType.AllTypes}
+      storeValue
+      onChange={(value) => props.onChange(value as EntryType)}
+    >
+      <ListOrGridDropdownItem title="All Types" value="All Types" />
+      <ListOrGridDropdownSection>
+        {Object.values(EntryType)
+          .filter((key) => key !== "All Types")
+          .sort()
+          .map((key) => (
+            <ListOrGridDropdownItem key={key} title={key} value={key} />
+          ))}
+      </ListOrGridDropdownSection>
+    </ListOrGridDropdown>
+  );
+}
+
+function EntryItem(props: { entry: EntryLike; pinned?: boolean } & PinMethods & RemoveMethods) {
+  if (isWorkspaceEntry(props.entry)) {
+    return <LocalItem {...props} uri={props.entry.workspace.configPath} />;
+  } else if (isFolderEntry(props.entry)) {
+    return <LocalItem {...props} uri={props.entry.folderUri} />;
+  } else if (isRemoteEntry(props.entry)) {
+    return (
+      <RemoteItem
+        {...props}
+        uri={props.entry.folderUri}
+        subtitle={props.entry.label}
+        entry={props.entry}
+        pinned={props.pinned}
+      />
+    );
+  } else if (isRemoteWorkspaceEntry(props.entry)) {
+    return (
+      <RemoteItem
+        {...props}
+        uri={props.entry.workspace.configPath}
+        subtitle={props.entry.label}
+        entry={props.entry}
+        pinned={props.pinned}
+      />
+    );
+  } else if (isFileEntry(props.entry)) {
+    return <LocalItem {...props} uri={props.entry.fileUri} />;
+  } else {
+    return null;
+  }
+}
+
+function LocalItem(
+  props: { entry: EntryLike; uri: string; pinned?: boolean; gridView?: boolean } & PinMethods & RemoveMethods
+) {
+  const name = decodeURIComponent(basename(props.uri));
+  const path = fileURLToPath(props.uri);
+  const prettyPath = tildify(path);
+  const subtitle = dirname(prettyPath);
+  const keywords = path.split("/");
+  const [gitBranch, setGitBranch] = useState<string | null>(null);
+
+  const { data: editorApp } = usePromise(async () => {
+    return getEditorApplication(build);
+  });
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function fetchGitBranch() {
+      try {
+        const branch = await getGitBranch(path);
+        if (mounted) {
+          setGitBranch(branch);
+        }
+      } catch (error) {
+        // Silently handle errors - they're already handled in getGitBranch
+      }
+    }
+
+    fetchGitBranch();
+    return () => {
+      mounted = false;
+    };
+  }, [path, name]);
+
+  const getTitle = (revert = false) => {
+    return `Open in ${build} ${closeOtherWindows !== revert ? "and Close Other" : ""}`;
+  };
+
+  const getAction = (revert = false) => {
+    return () => {
+      if (closeOtherWindows !== revert) {
+        runAppleScriptSync(`
+        tell application "System Events"
+          tell process "${build}"
+            repeat while window 1 exists
+              click button 1 of window 1
+            end repeat
+          end tell
+        end tell
+        `);
+      }
+      open(props.uri, bundleIdentifier);
+    };
+  };
+
+  const accessories = [];
+  if (showGitBranch && gitBranch) {
+    const branchColor =
+      gitBranchColor && isValidHexColor(gitBranchColor)
+        ? { light: gitBranchColor, dark: gitBranchColor, adjustContrast: false }
+        : Color.Green;
+    accessories.push({
+      tag: {
+        value: gitBranch,
+        color: branchColor,
+      },
+      tooltip: `Git Branch: ${gitBranch}`,
+    });
+  }
+
+  const displaySubtitle = showGitBranch && gitBranch && layout === "grid" ? `${gitBranch} • ${subtitle}` : subtitle;
+
+  return (
+    <ListOrGridItem
+      id={props.pinned ? path : undefined}
+      title={name}
+      subtitle={displaySubtitle}
+      icon={{ fileIcon: path }}
+      content={{ fileIcon: path }}
+      keywords={keywords}
+      accessories={accessories}
+      actions={
+        <ActionPanel>
+          <ActionPanel.Section>
+            <Action
+              title={getTitle()}
+              icon={editorApp ? { fileIcon: editorApp.path } : "action-icon.png"}
+              onAction={getAction()}
+            />
+            <Action.ShowInFinder path={path} />
+            <Action
+              title={getTitle(true)}
+              icon={editorApp ? { fileIcon: editorApp.path } : "action-icon.png"}
+              onAction={getAction(true)}
+              shortcut={{ modifiers: ["cmd", "shift"], key: "enter" }}
+            />
+            <Action.OpenWith path={path} shortcut={{ modifiers: ["cmd"], key: "o" }} />
+            {isFolderEntry(props.entry) && terminalApp && (
+              <Action
+                title={`Open with ${terminalApp.name}`}
+                icon={{ fileIcon: terminalApp.path }}
+                shortcut={{ modifiers: ["cmd", "shift"], key: "o" }}
+                onAction={() =>
+                  open(path, terminalApp).catch(() =>
+                    showToast(Toast.Style.Failure, `Failed to open with ${terminalApp?.name}`)
+                  )
+                }
+              />
+            )}
+          </ActionPanel.Section>
+          <ActionPanel.Section>
+            <Action.CopyToClipboard title="Copy Name" content={name} shortcut={{ modifiers: ["cmd"], key: "." }} />
+            <Action.CopyToClipboard
+              title="Copy Path"
+              content={prettyPath}
+              shortcut={{ modifiers: ["cmd", "shift"], key: "." }}
+            />
+          </ActionPanel.Section>
+          <RemoveActionSection {...props} />
+          <PinActionSection {...props} />
+        </ActionPanel>
+      }
+    />
+  );
+}
+
+function RemoteItem(
+  props: { entry: EntryLike; uri: string; subtitle?: string; pinned?: boolean } & PinMethods & RemoveMethods
+) {
+  const remotePath = decodeURI(basename(props.uri));
+  const scheme = getBuildScheme();
+
+  const uri = props.uri.replace("vscode-remote://", `${scheme}://vscode-remote/`);
+
+  const getTitle = (revert = false) => {
+    return `Open in ${build} ${closeOtherWindows !== revert ? "and Close Other" : ""}`;
+  };
+
+  const getUrl = (uri: string, revert = false) => {
+    const url = new URL(uri);
+    if (closeOtherWindows !== revert) {
+      // close other windows
+      url.searchParams.delete("windowId");
+    } else {
+      // don't close other windows
+      url.searchParams.set("windowId", "_blank");
+    }
+    return url.toString();
+  };
+
+  return (
+    <ListOrGridItem
+      id={props.pinned ? remotePath : undefined}
+      title={remotePath}
+      subtitle={props.subtitle || "/"}
+      icon="remote.svg"
+      content="remote.svg"
+      actions={
+        <ActionPanel>
+          <ActionPanel.Section>
+            <Action.OpenInBrowser title={getTitle()} icon="action-icon.png" url={getUrl(uri)} />
+            <Action.OpenInBrowser
+              title={getTitle(true)}
+              icon="action-icon.png"
+              url={getUrl(uri, true)}
+              shortcut={{ modifiers: ["cmd", "shift"], key: "enter" }}
+            />
+          </ActionPanel.Section>
+          <RemoveActionSection {...props} />
+          <PinActionSection {...props} />
+          <Action
+            title="Open Preferences"
+            icon={Icon.Gear}
+            onAction={openExtensionPreferences}
+            shortcut={{ modifiers: ["cmd"], key: "," }}
+          />
+        </ActionPanel>
+      }
+    />
+  );
+}
+
+function PinActionSection(props: { entry: EntryLike; pinned?: boolean } & PinMethods) {
+  const movements = props.getAllowedMovements(props.entry);
+
+  return !props.pinned ? (
+    <ActionPanel.Section>
+      <Action
+        title="Pin Entry"
+        icon={Icon.Pin}
+        shortcut={{ modifiers: ["cmd", "shift"], key: "p" }}
+        onAction={async () => {
+          props.pin(props.entry);
+          await showToast({ title: "Pinned entry" });
+        }}
+      />
+    </ActionPanel.Section>
+  ) : (
+    <ActionPanel.Section>
+      <Action
+        title="Unpin Entry"
+        shortcut={{ modifiers: ["cmd", "shift"], key: "p" }}
+        icon={Icon.PinDisabled}
+        onAction={async () => {
+          props.unpin(props.entry);
+          await showToast({ title: "Unpinned entry" });
+        }}
+      />
+      {movements.includes("left") && (
+        <Action
+          title="Move Left in Pinned Entries"
+          shortcut={{ modifiers: ["cmd", "opt"], key: "arrowLeft" }}
+          icon={Icon.ArrowLeft}
+          onAction={async () => {
+            props.moveUp(props.entry);
+            await showToast({ title: "Moved pinned entry left" });
+          }}
+        />
+      )}
+      {movements.includes("up") && (
+        <Action
+          title="Move up in Pinned Entries"
+          shortcut={{ modifiers: ["cmd", "opt"], key: "arrowUp" }}
+          icon={Icon.ArrowUp}
+          onAction={async () => {
+            props.moveUp(props.entry);
+            await showToast({ title: "Moved pinned entry up" });
+          }}
+        />
+      )}
+      {movements.includes("right") && (
+        <Action
+          title="Move Right in Pinned Entries"
+          shortcut={{ modifiers: ["cmd", "opt"], key: "arrowRight" }}
+          icon={Icon.ArrowRight}
+          onAction={async () => {
+            props.moveDown(props.entry);
+            await showToast({ title: "Moved pinned entry right" });
+          }}
+        />
+      )}
+      {movements.includes("down") && (
+        <Action
+          title="Move Down in Pinned Entries"
+          shortcut={{ modifiers: ["cmd", "opt"], key: "arrowDown" }}
+          icon={Icon.ArrowDown}
+          onAction={async () => {
+            props.moveDown(props.entry);
+            await showToast({ title: "Moved pinned entry down" });
+          }}
+        />
+      )}
+      <Action
+        title="Unpin All Entries"
+        icon={Icon.PinDisabled}
+        shortcut={{ modifiers: ["ctrl", "shift"], key: "x" }}
+        style={Action.Style.Destructive}
+        onAction={async () => {
+          props.unpinAll();
+          await showToast({ title: "Unpinned all entries" });
+        }}
+      />
+    </ActionPanel.Section>
+  );
+}
+
+function RemoveActionSection(props: { entry: EntryLike } & RemoveMethods) {
+  return (
+    <ActionPanel.Section>
+      <Action
+        icon={Icon.Trash}
+        title="Remove from Recent Projects"
+        style={Action.Style.Destructive}
+        onAction={() => props.removeEntry(props.entry)}
+        shortcut={{ modifiers: ["ctrl"], key: "x" }}
+      />
+
+      <Action
+        icon={Icon.Trash}
+        title="Remove All Recent Projects"
+        style={Action.Style.Destructive}
+        onAction={() => props.removeAllEntries()}
+        shortcut={{ modifiers: ["ctrl", "shift"], key: "x" }}
+      />
+    </ActionPanel.Section>
   );
 }
